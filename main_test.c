@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-enum {
+enum times {
     start_time,
     before_INIT = start_time,
     after_INIT,
@@ -21,10 +21,18 @@ enum {
     end_time,
     num_time = end_time
 };
+const char *time_names[num_time] = {"before_INIT",
+                                    "between_INIT_and_START",
+                                    "between_START_and_TEST",
+                                    "between_TEST_and_WAIT",
+                                    "between_WAIT_and_FREE",
+                                    "after_FREE",
+                                    "before_MPI", "after_MPI"};
 
-enum {
+enum stats{
     start_stat,
-    MIN = start_stat,
+    First = start_stat,
+    MIN,
     Quartile_1st,
     MEDIAN,
     Quartile_3rd,
@@ -34,7 +42,7 @@ enum {
     num_stat = end_stat
 };
 
-enum interval {
+enum intervals {
     start_interval,
     interval_INIT = start_interval,
     interval_START,
@@ -52,7 +60,7 @@ const int num_trials = 100;
 double times[num_trials][num_time];
 double stats[num_stat][num_interval];
 
-double interval(enum interval i, int t) {
+double interval(int t, enum intervals i) {
     double interval = 0.0;
     switch(i) {
       case interval_INIT:
@@ -82,27 +90,47 @@ double interval(enum interval i, int t) {
     return interval;
 }
 
-const char *interval_names[7] = {"INIT", "START", "TEST", "WAIT", "FREE", "TOTAL", "MPI"};
+const char *interval_names[num_interval] = {"INIT", "START", "TEST", "WAIT", "FREE", "TOTAL", "MPI"};
 
-void OUTPUT(int rank, enum interval i) {
-    printf("[Rank:%d] TIME %s (MIN=%lf, MEAN=%lf, MAX=%lf)\n",
+void OUTPUT(int rank, enum intervals i) {
+    printf("[Rank:%d] STATS for %s 1st=%lf (MIN=%lf, MEAN=%lf, MAX=%lf)\n",
            rank, interval_names[i],
+           stats[First][i],
            stats[MIN][i],
            stats[MEAN][i],
            stats[MAX][i]);
 }
 
-int main(int argc, char **argv) {
+void DUMP_TIMES(int rank, int t) {
+    if (!rank & !t) {
+        printf("Rank,Trial,Time,Name,Value\n");
+    }
+    for (enum times n=start_time;n<num_time;++n) {
+        printf("%d,%d,%d,%s,%lf\n",
+               rank, t, n, time_names[n],
+               times[t][n]);
+    }
+}
 
-printf("About to call MPI_INIT\n");
-    MPI_Init(&argc, &argv);
-printf("Done call MPI_INIT\n");
+void DUMP_INTERVALS(int rank, int t) {
+    if (!rank & !t) {
+        printf("Rank,Trial,Interval,Name,Value\n");
+    }
+    for (enum intervals i=start_interval;i<num_interval;++i) {
+        printf("%d,%d,%d,%s,%lf\n",
+               rank, t, i, interval_names[i],
+               interval(t, i));
+    }
+}
+
+int main(int argc, char **argv) {
 
     MPIX_Request request;
     MPI_Status status;
     long *sendbuf, *recvbuf;
     int rank, count = 1, root = 0, flag = 0;
 
+    MPI_Init(&argc, &argv);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
     sendbuf = malloc(sizeof(long));
@@ -161,11 +189,11 @@ printf("Done call MPI_INIT\n");
     times[num_trials-1][before_INIT] = times[num_trials-1][after_INIT];
 
     // compute aggregation stats
-    for (int i=start_interval;i<end_interval;++i) {
+    for (enum intervals i=start_interval;i<num_interval;++i) {
         stats[MIN][i] = 0.0;
         stats[MEAN][i] = 0.0;
         stats[MAX][i] = 0.0;
-        for (int t=0;t<num_trials;++t) {
+        for (int t=1;t<num_trials;++t) {
             if (stats[MIN][i] > interval(t,i))
                 stats[MIN][i] = interval(t,i);
             stats[MEAN][i] += interval(t,i);
@@ -173,10 +201,25 @@ printf("Done call MPI_INIT\n");
                 stats[MAX][i] = interval(t,i);
         }
         stats[MEAN][i] /= (double)num_trials;
+        stats[First][i] = interval(0,i);
     }
 
-    for (int i=start_interval;i<end_interval;++i) {
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    for (enum intervals i=start_interval;i<num_interval;++i) {
         OUTPUT(rank, i);
+    }
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    for (int t=0;t<num_trials;++t) {
+        DUMP_TIMES(rank, t);
+    }
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    for (int t=0;t<num_trials;++t) {
+        DUMP_INTERVALS(rank, t);
     }
 
     MPI_Finalize();
